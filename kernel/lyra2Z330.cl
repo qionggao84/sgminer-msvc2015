@@ -31,8 +31,8 @@
 
 #pragma OPENCL EXTENSION cl_amd_printf : enable
 
-#ifndef LYRA2RE_CL
-#define LYRA2RE_CL
+#ifndef LYRA2Z330_CL
+#define LYRA2Z330_CL
 
 #if __ENDIAN_LITTLE__
 #define SPH_LITTLE_ENDIAN 1
