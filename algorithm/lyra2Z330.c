@@ -44,6 +44,18 @@
  * Encode a length len/4 vector of (uint32_t) into a length len vector of
  * (unsigned char) in big-endian form.  Assumes len is a multiple of 4.
  */
+#define _ALIGN(x) __attribute__ ((aligned(x)))
+
+//extern uint64_t lyra2z330_height;
+
+void lyra2z330_hash(const char* input, char* output, uint32_t len)
+{
+  uint32_t _ALIGN(64) hash[8];
+
+  LYRA2Z((void*)hash, 32, (void*)input, len, (void*)input, len, 2, 330, 256);
+
+  memcpy(output, hash, 32);
+}
 static inline void
 be32enc_vect(uint32_t *dst, const uint32_t *src, uint32_t len)
 {
