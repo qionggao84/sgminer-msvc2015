@@ -38,7 +38,7 @@
 #include "sph/sph_keccak.h" 
 #include "sph/sph_bmw.h"
 #include "sph/sph_cubehash.h"
-#include "lyra2.h"
+#include "lyra2Z.h"
 
 /*
  * Encode a length len/4 vector of (uint32_t) into a length len vector of
@@ -79,7 +79,7 @@ inline void lyra2Z330hash(void *state, const void *input)
 //	printf("cpu hashA %08x %08x %08x %08x  %08x %08x %08x %08x\n",
 //		hashA[0], hashA[1], hashA[2], hashA[3], hashA[4], hashA[5], hashA[6], hashA[7]);
 
-	LYRA2(hashB, 32, hashA, 32, hashA, 32, 8, 8, 8);
+	LYRA2Z(hashB, 32, hashA, 32, hashA, 32, 8, 8, 8);
 
 //printf("cpu hashB %08x %08x %08x %08x  %08x %08x %08x %08x\n",
 //hashB[0],hashB[1],hashB[2],hashB[3], hashB[4], hashB[5], hashB[6], hashB[7]);
