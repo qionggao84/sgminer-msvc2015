@@ -1,175 +1,380 @@
 /*
-* Lyra2 kernel implementation.
-*
-* ==========================(LICENSE BEGIN)============================
-* Copyright (c) 2014 djm34
-* 
-*
-* Permission is hereby granted, free of charge, to any person obtaining
-* a copy of this software and associated documentation files (the
-* "Software"), to deal in the Software without restriction, including
-* without limitation the rights to use, copy, modify, merge, publish,
-* distribute, sublicense, and/or sell copies of the Software, and to
-* permit persons to whom the Software is furnished to do so, subject to
-* the following conditions:
-*
-* The above copyright notice and this permission notice shall be
-* included in all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
-* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-*
-* ===========================(LICENSE END)=============================
-*
-* @author   djm34
-*/
+ * Lyra2h kernel implementation.
+ *
+ * ==========================(LICENSE BEGIN)============================
+ * 
+ * Copyright (c) 2017 djm34
+ * 
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ * 
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ * 
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ *
+ * ===========================(LICENSE END)=============================
+ *
+ * @author   djm34
+ */
+// typedef unsigned int uint;
+#define NVIDIA_GPU 0
+#ifdef cl_nv_pragma_unroll
+#define NVIDIA
+#undef NVIDIA_GPU
+#define NVIDIA_GPU 1
+#endif
 
-/*Blake2b IV Array*/
-__constant static const sph_u64 blake2b_IV[8] =
-{
-  0x6a09e667f3bcc908ULL, 0xbb67ae8584caa73bULL,
-  0x3c6ef372fe94f82bULL, 0xa54ff53a5f1d36f1ULL,
-  0x510e527fade682d1ULL, 0x9b05688c2b3e6c1fULL,
-  0x1f83d9abfb41bd6bULL, 0x5be0cd19137e2179ULL
-};
 
-/*Blake2b's rotation*/
+#pragma OPENCL EXTENSION cl_amd_printf : enable
 
-static inline uint2 ror2(uint2 v, unsigned a) {
-	uint2 result;
-	unsigned n = 64 - a;
-	if (n == 32) { return (uint2)(v.y,v.x); }
-	if (n < 32) {
-		result.y = ((v.y << (n)) | (v.x >> (32 - n)));
-		result.x = ((v.x << (n)) | (v.y >> (32 - n)));
-	}
-	else {
-		result.y = ((v.x << (n - 32)) | (v.y >> (64 - n)));
-		result.x = ((v.y << (n - 32)) | (v.x >> (64 - n)));
-	}
-	return result;
-}
-static inline uint2 ror2l(uint2 v, unsigned a) {
-	uint2 result;
-		result.y = ((v.x << (32-a)) | (v.y >> (a)));
-		result.x = ((v.y << (32-a)) | (v.x >> (a)));
-	return result;
-}
-static inline uint2 ror2r(uint2 v, unsigned a) {
-	uint2 result;
-		result.y = ((v.y << (64-a)) | (v.x >> (a-32)));
-		result.x = ((v.x << (64-a)) | (v.y >> (a-32)));
-	return result;
-}
+#ifndef LYRA2Z_CL
+#define LYRA2Z_CL
 /*
-#define G(a,b,c,d) \
-  do { \
-a = as_uint2(as_ulong(a)+as_ulong(b)); d ^= a; d = d.yx; \
-c = as_uint2(as_ulong(c)+as_ulong(d)); b ^= c; b = ror2l(b, 24); \
-a = as_uint2(as_ulong(a)+as_ulong(b)); d ^= a; d = ror2l(d, 16); \
-c = as_uint2(as_ulong(c)+as_ulong(d)); b ^= c; b = ror2r(b, 63); \
-  } while(0)
+#if __ENDIAN_LITTLE__
+#define SPH_LITTLE_ENDIAN 1
+#else
+#define SPH_BIG_ENDIAN 1
+#endif
+#define SPH_UPTR sph_u64
+typedef unsigned int sph_u32;
+typedef int sph_s32;
+#ifndef __OPENCL_VERSION__
+typedef unsigned long sph_u64;
+typedef long  sph_s64;
+#else
+typedef unsigned long sph_u64;
+typedef long sph_s64;
+#endif
+#define SPH_64 1
+#define SPH_64_TRUE 1
+#define SPH_C32(x)    ((sph_u32)(x ## U))
+#define SPH_T32(x)    ((x) & SPH_C32(0xFFFFFFFF))
+#define SPH_C64(x)    ((sph_u64)(x ## UL))
+#define SPH_T64(x)    ((x) & SPH_C64(0xFFFFFFFFFFFFFFFF))
 */
-#define G(a,b,c,d) \
-  do { \
-a = as_uint2(as_ulong(a)+as_ulong(b)); d ^= a; d = d.yx; \
-c = as_uint2(as_ulong(c)+as_ulong(d)); b ^= c; b = as_uint2(as_uchar8(b).s34567012); \
-a = as_uint2(as_ulong(a)+as_ulong(b)); d ^= a; d = ror2l(d, 16); \
-c = as_uint2(as_ulong(c)+as_ulong(d)); b ^= c; b = ror2r(b, 63); \
-  } while(0)
 
-/*One Round of the Blake2b's compression function*/
-#define round_lyra(v)  \
- do { \
-    G(v[ 0],v[ 4],v[ 8],v[12]); \
-    G(v[ 1],v[ 5],v[ 9],v[13]); \
-    G(v[ 2],v[ 6],v[10],v[14]); \
-    G(v[ 3],v[ 7],v[11],v[15]); \
-    G(v[ 0],v[ 5],v[10],v[15]); \
-    G(v[ 1],v[ 6],v[11],v[12]); \
-    G(v[ 2],v[ 7],v[ 8],v[13]); \
-    G(v[ 3],v[ 4],v[ 9],v[14]); \
- } while(0)
+#define memshift 3
+#include "blake256.cl"
+#include "lyra2v16h.cl"
 
 
-#define reduceDuplexRowSetup(rowIn, rowInOut, rowOut) \
-   { \
-	for (int i = 0; i < 8; i++) \
-				{ \
-\
-		for (int j = 0; j < 12; j++) {state[j] ^= as_uint2(as_ulong(Matrix[12 * i + j][rowIn]) + as_ulong(Matrix[12 * i + j][rowInOut]));} \
-		round_lyra(state); \
-		for (int j = 0; j < 12; j++) {Matrix[j + 84 - 12 * i][rowOut] = Matrix[12 * i + j][rowIn] ^ state[j];} \
-\
-		Matrix[0 + 12 * i][rowInOut] ^= state[11]; \
-		Matrix[1 + 12 * i][rowInOut] ^= state[0]; \
-		Matrix[2 + 12 * i][rowInOut] ^= state[1]; \
-		Matrix[3 + 12 * i][rowInOut] ^= state[2]; \
-		Matrix[4 + 12 * i][rowInOut] ^= state[3]; \
-		Matrix[5 + 12 * i][rowInOut] ^= state[4]; \
-		Matrix[6 + 12 * i][rowInOut] ^= state[5]; \
-		Matrix[7 + 12 * i][rowInOut] ^= state[6]; \
-		Matrix[8 + 12 * i][rowInOut] ^= state[7]; \
-		Matrix[9 + 12 * i][rowInOut] ^= state[8]; \
-		Matrix[10 + 12 * i][rowInOut] ^= state[9]; \
-		Matrix[11 + 12 * i][rowInOut] ^= state[10]; \
-				} \
- \
-   } 
 
-#define reduceDuplexRow(rowIn, rowInOut, rowOut) \
-  { \
-	 for (int i = 0; i < 8; i++) \
-	 	 	 	 	 { \
-		 for (int j = 0; j < 12; j++) \
-			 state[j] ^= as_uint2(as_ulong(Matrix[12 * i + j][rowIn]) + as_ulong(Matrix[12 * i + j][rowInOut])); \
- \
-		 round_lyra(state); \
-		 for (int j = 0; j < 12; j++) {Matrix[j + 12 * i][rowOut] ^= state[j];} \
-\
-		 Matrix[0 + 12 * i][rowInOut] ^= state[11]; \
-		 Matrix[1 + 12 * i][rowInOut] ^= state[0]; \
-		 Matrix[2 + 12 * i][rowInOut] ^= state[1]; \
-		 Matrix[3 + 12 * i][rowInOut] ^= state[2]; \
-		 Matrix[4 + 12 * i][rowInOut] ^= state[3]; \
-		 Matrix[5 + 12 * i][rowInOut] ^= state[4]; \
-		 Matrix[6 + 12 * i][rowInOut] ^= state[5]; \
-		 Matrix[7 + 12 * i][rowInOut] ^= state[6]; \
-		 Matrix[8 + 12 * i][rowInOut] ^= state[7]; \
-		 Matrix[9 + 12 * i][rowInOut] ^= state[8]; \
-		 Matrix[10 + 12 * i][rowInOut] ^= state[9]; \
-		 Matrix[11 + 12 * i][rowInOut] ^= state[10]; \
-	 	 	 	 	 } \
- \
-  } 
-#define absorbblock(in)  { \
-	state[0] ^= Matrix[0][in]; \
-	state[1] ^= Matrix[1][in]; \
-	state[2] ^= Matrix[2][in]; \
-	state[3] ^= Matrix[3][in]; \
-	state[4] ^= Matrix[4][in]; \
-	state[5] ^= Matrix[5][in]; \
-	state[6] ^= Matrix[6][in]; \
-	state[7] ^= Matrix[7][in]; \
-	state[8] ^= Matrix[8][in]; \
-	state[9] ^= Matrix[9][in]; \
-	state[10] ^= Matrix[10][in]; \
-	state[11] ^= Matrix[11][in]; \
-	round_lyra(state); \
-	round_lyra(state); \
-	round_lyra(state); \
-	round_lyra(state); \
-	round_lyra(state); \
-	round_lyra(state); \
-	round_lyra(state); \
-	round_lyra(state); \
-	round_lyra(state); \
-	round_lyra(state); \
-	round_lyra(state); \
-	round_lyra(state); \
-  } 
+#define SWAP4(x) as_uint(as_uchar4(x).wzyx)
+#define SWAP8(x) as_ulong(as_uchar8(x).s76543210)
+//#define SWAP8(x) as_ulong(as_uchar8(x).s32107654)
+/*
+#if SPH_BIG_ENDIAN
+  #define DEC64E(x) (x)
+  #define DEC64BE(x) (*(const __global sph_u64 *) (x));
+  #define DEC64LE(x) SWAP8(*(const __global sph_u64 *) (x));
+  #define DEC32LE(x) (*(const __global sph_u32 *) (x));
+#else
+  #define DEC64E(x) SWAP8(x)
+  #define DEC64BE(x) SWAP8(*(const __global sph_u64 *) (x));
+  #define DEC64LE(x) (*(const __global sph_u64 *) (x));
+#define DEC32LE(x) SWAP4(*(const __global sph_u32 *) (x));
+#endif
+*/
+typedef union {
+  unsigned char h1[32];
+  uint h4[8];
+  ulong h8[4];
+} hash_t;
+
+__attribute__((reqd_work_group_size(WORKSIZE, 1, 1)))
+__kernel void search(
+	 __global uchar* hashes,
+	// precalc hash from fisrt part of message
+	const uint h0,
+	const uint h1,
+	const uint h2,
+	const uint h3,
+	const uint h4,
+	const uint h5,
+	const uint h6,
+	const uint h7,
+	// last 12 bytes of original message
+	const uint in16,
+	const uint in17,
+	const uint in18
+)
+{
+ uint gid = get_global_id(0);
+ __global hash_t *hash = (__global hash_t *)(hashes + (4 * sizeof(ulong)* (gid - get_global_offset(0))));
+
+
+//  __global hash_t *hash = &(hashes[gid-get_global_offset(0)]);
+
+    unsigned int h[8];
+	unsigned int m[16];
+	unsigned int v[16];
+
+
+h[0]=h0;
+h[1]=h1;
+h[2]=h2;
+h[3]=h3;
+h[4]=h4;
+h[5]=h5;
+h[6]=h6;
+h[7]=h7;
+// compress 2nd round
+ m[0] = in16;
+ m[1] = in17;
+ m[2] = in18;
+ m[3] = SWAP4(gid);
+
+	for (int i = 4; i < 16; i++) {m[i] = c_Padding[i];}
+
+	for (int i = 0; i < 8; i++) {v[i] = h[i];}
+
+	v[8] =  c_u256[0];
+	v[9] =  c_u256[1];
+	v[10] = c_u256[2];
+	v[11] = c_u256[3];
+	v[12] = c_u256[4] ^ 640;
+	v[13] = c_u256[5] ^ 640;
+	v[14] = c_u256[6];
+	v[15] = c_u256[7];
+
+	for (int r = 0; r < 14; r++) {	
+		GS(0, 4, 0x8, 0xC, 0x0);
+		GS(1, 5, 0x9, 0xD, 0x2);
+		GS(2, 6, 0xA, 0xE, 0x4);
+		GS(3, 7, 0xB, 0xF, 0x6);
+		GS(0, 5, 0xA, 0xF, 0x8);
+		GS(1, 6, 0xB, 0xC, 0xA);
+		GS(2, 7, 0x8, 0xD, 0xC);
+		GS(3, 4, 0x9, 0xE, 0xE);
+	}
+
+	for (int i = 0; i < 16; i++) {
+		 int j = i & 7;
+		h[j] ^= v[i];}
+
+for (int i=0;i<8;i++) {hash->h4[i]=SWAP4(h[i]);}
+
+barrier(CLK_LOCAL_MEM_FENCE);
+
+}
+
+
+/// lyra2 algo 
+
+
+__attribute__((reqd_work_group_size(WORKSIZE, 1, 1)))
+__kernel void search1(__global uchar* hashes,__global uchar* matrix, __global uint* output, const ulong target)
+{
+ uint gid = get_global_id(0);
+ // __global hash_t *hash = &(hashes[gid-get_global_offset(0)]);
+  __global hash_t *hash = (__global hash_t *)(hashes + (4 * sizeof(ulong)* (gid - get_global_offset(0))));
+  __global ulong4 *DMatrix = (__global ulong4 *)(matrix + (4 * memshift * 16 * 16 * 8 * (gid - get_global_offset(0))));
+
+//  uint offset = (4 * memshift * 4 * 4 * sizeof(ulong)* (get_global_id(0) % MAX_GLOBAL_THREADS))/32;
+  ulong4 state[4];
+  __local ulong4 temp[48*WORKSIZE];
+  
+  state[0].x = hash->h8[0]; //password
+  state[0].y = hash->h8[1]; //password
+  state[0].z = hash->h8[2]; //password
+  state[0].w = hash->h8[3]; //password
+  state[1] = state[0];
+  state[2] = (ulong4)(0x6a09e667f3bcc908UL, 0xbb67ae8584caa73bUL, 0x3c6ef372fe94f82bUL, 0xa54ff53a5f1d36f1UL);
+  state[3] = (ulong4)(0x510e527fade682d1UL, 0x9b05688c2b3e6c1fUL, 0x1f83d9abfb41bd6bUL, 0x5be0cd19137e2179UL);
+
+  for (int i = 0; i<12; i++) { round_lyra(state); } 
+
+  state[0] ^= (ulong4)(0x20,0x20,0x20,0x10);
+  state[1] ^= (ulong4)(0x10,0x10,0x80,0x0100000000000000);
+
+  for (int i = 0; i<12; i++) { round_lyra(state); } 
+
+// reducedsqueezedrow0
+  uint ps1 = (memshift * 15);
+//#pragma unroll 4
+  for (int i = 0; i < 16; i++)
+  {
+	  uint s1 = ps1 - memshift * i;
+	  for (int j = 0; j < 3; j++)
+		  (DMatrix)[j+s1] = state[j];
+
+	  for (int j = 0; j < 3; j++)
+		  temp[3*(15-i)+j+48* get_local_id(0)] = state[j];
+
+	  round_lyra(state);
+  }
+ ///// reduceduplexrow1 ////////////
+
+  reduceDuplexf_tmp(state,DMatrix,temp + 48 * get_local_id(0));
+ 
+  reduceDuplexRowSetupf_pass1(1, 0, 2,state, DMatrix, temp + 48 * get_local_id(0));
+  reduceDuplexRowSetupf_pass2(2, 1, 3, state,DMatrix, temp + 48 * get_local_id(0));
+  reduceDuplexRowSetupf_pass1(3, 0, 4, state, DMatrix, temp + 48 * get_local_id(0));
+  reduceDuplexRowSetupf_pass2(4, 3, 5, state, DMatrix, temp + 48 * get_local_id(0));
+  reduceDuplexRowSetupf_pass1(5, 2, 6, state, DMatrix, temp + 48 * get_local_id(0));
+  reduceDuplexRowSetupf_pass2(6, 1, 7, state, DMatrix, temp + 48 * get_local_id(0));
+  reduceDuplexRowSetupf_pass1(7, 0, 8, state, DMatrix, temp + 48 * get_local_id(0));
+  reduceDuplexRowSetupf_pass2(8, 3, 9, state, DMatrix, temp + 48 * get_local_id(0));
+  reduceDuplexRowSetupf_pass1(9, 6, 10, state, DMatrix, temp + 48 * get_local_id(0));
+  reduceDuplexRowSetupf_pass2(10, 1, 11, state, DMatrix, temp + 48 * get_local_id(0));
+  reduceDuplexRowSetupf_pass1(11, 4, 12, state, DMatrix, temp + 48 * get_local_id(0));
+  reduceDuplexRowSetupf_pass2(12, 7, 13, state, DMatrix, temp + 48 * get_local_id(0));
+  reduceDuplexRowSetupf_pass1(13, 2, 14, state, DMatrix, temp + 48 * get_local_id(0));
+  reduceDuplexRowSetupf_pass2(14, 5, 15, state, DMatrix, temp + 48 * get_local_id(0));
+
+  uint rowa;
+  uint prev = 15;
+  uint iterator = 0;
+
+//for (uint j = 0; j < 8; j++) {
+
+  for (uint i = 0; i<16; i++) {
+	  rowa = state[0].x & 15;
+	  reduceDuplexRowf_tmp(prev, rowa, iterator, state, DMatrix, temp + 48 * get_local_id(0));
+	  prev = iterator;
+	  iterator = (iterator + 7) & 15;
+  }
+
+  for (uint i = 0; i<16; i++) {
+	  rowa = state[0].x & 15;
+	  reduceDuplexRowf_tmp(prev, rowa, iterator, state, DMatrix, temp + 48 * get_local_id(0));
+	  prev = iterator;
+	  iterator = (iterator - 1) & 15;
+  }
+///
+
+  for (uint i = 0; i<16; i++) {
+	  rowa = state[0].x & 15;
+	  reduceDuplexRowf_tmp(prev, rowa, iterator, state, DMatrix, temp + 48 * get_local_id(0));
+	  prev = iterator;
+	  iterator = (iterator + 7) & 15;
+  }
+
+  for (uint i = 0; i<16; i++) {
+	  rowa = state[0].x & 15;
+	  reduceDuplexRowf_tmp(prev, rowa, iterator, state, DMatrix, temp + 48 * get_local_id(0));
+	  prev = iterator;
+	  iterator = (iterator - 1) & 15;
+  }
+  for (uint i = 0; i<16; i++) {
+	  rowa = state[0].x & 15;
+	  reduceDuplexRowf_tmp(prev, rowa, iterator, state, DMatrix, temp + 48 * get_local_id(0));
+	  prev = iterator;
+	  iterator = (iterator + 7) & 15;
+  }
+
+  for (uint i = 0; i<16; i++) {
+	  rowa = state[0].x & 15;
+	  reduceDuplexRowf_tmp(prev, rowa, iterator, state, DMatrix, temp + 48 * get_local_id(0));
+	  prev = iterator;
+	  iterator = (iterator - 1) & 15;
+  }
+  for (uint i = 0; i<16; i++) {
+	  rowa = state[0].x & 15;
+	  reduceDuplexRowf_tmp(prev, rowa, iterator, state, DMatrix, temp + 48 * get_local_id(0));
+	  prev = iterator;
+	  iterator = (iterator + 7) & 15;
+  }
+
+  for (uint i = 0; i<16; i++) {
+	  rowa = state[0].x & 15;
+	  reduceDuplexRowf_tmp(prev, rowa, iterator, state, DMatrix, temp + 48 * get_local_id(0));
+	  prev = iterator;
+	  iterator = (iterator - 1) & 15;
+  }
+  for (uint i = 0; i<16; i++) {
+	  rowa = state[0].x & 15;
+	  reduceDuplexRowf_tmp(prev, rowa, iterator, state, DMatrix, temp + 48 * get_local_id(0));
+	  prev = iterator;
+	  iterator = (iterator + 7) & 15;
+  }
+
+  for (uint i = 0; i<16; i++) {
+	  rowa = state[0].x & 15;
+	  reduceDuplexRowf_tmp(prev, rowa, iterator, state, DMatrix, temp + 48 * get_local_id(0));
+	  prev = iterator;
+	  iterator = (iterator - 1) & 15;
+  }
+  for (uint i = 0; i<16; i++) {
+	  rowa = state[0].x & 15;
+	  reduceDuplexRowf_tmp(prev, rowa, iterator, state, DMatrix, temp + 48 * get_local_id(0));
+	  prev = iterator;
+	  iterator = (iterator + 7) & 15;
+  }
+
+  for (uint i = 0; i<16; i++) {
+	  rowa = state[0].x & 15;
+	  reduceDuplexRowf_tmp(prev, rowa, iterator, state, DMatrix, temp + 48 * get_local_id(0));
+	  prev = iterator;
+	  iterator = (iterator - 1) & 15;
+  }
+  for (uint i = 0; i<16; i++) {
+	  rowa = state[0].x & 15;
+	  reduceDuplexRowf_tmp(prev, rowa, iterator, state, DMatrix, temp + 48 * get_local_id(0));
+	  prev = iterator;
+	  iterator = (iterator + 7) & 15;
+  }
+
+  for (uint i = 0; i<16; i++) {
+	  rowa = state[0].x & 15;
+	  reduceDuplexRowf_tmp(prev, rowa, iterator, state, DMatrix, temp + 48 * get_local_id(0));
+	  prev = iterator;
+	  iterator = (iterator - 1) & 15;
+  }
+/// 7
+  for (uint i = 0; i<16; i++) {
+	  rowa = state[0].x & 15;
+	  reduceDuplexRowf_tmp(prev, rowa, iterator, state, DMatrix, temp + 48 * get_local_id(0));
+	  prev = iterator;
+	  iterator = (iterator + 7) & 15;
+  }
+  for (uint i = 0; i<15; i++) {
+	  rowa = state[0].x & 15;
+	  reduceDuplexRowf_tmp(prev, rowa, iterator, state, DMatrix, temp + 48 * get_local_id(0));
+	  prev = iterator;
+	  iterator = (iterator - 1) & 15;
+  }
+
+      rowa = state[0].x & 15;
+	  reduceDuplexRowf_tmp2(prev, rowa, iterator, state, DMatrix, temp + 48 * get_local_id(0));
+	  prev = iterator;
+	  iterator = (iterator - 1) & 15;
+
+//}
+
+  for (int j = 0; j < 3; j++)
+	  state[j] ^= temp[j + 48 * get_local_id(0)]; //(DMatrix)[j+shift];
+
+//  for (int j = 0; j < 3; j++)
+//	  state[j] ^= temp[j];
+
+  for (int i = 0; i < 12; i++)
+	  round_lyra(state);
+//////////////////////////////////////
+
+
+//  for (int i = 0; i<4; i++) {hash->h8[i] = ((ulong*)state)[i];} 
+//barrier(CLK_LOCAL_MEM_FENCE);
+
+bool result = (((ulong*)state)[3] <= target);
+if (result) {
+	output[atomic_inc(output + 0xFF)] = SWAP4(gid);
+}
+
+}
+
+
+
+#endif // LYRA2Z_CL
