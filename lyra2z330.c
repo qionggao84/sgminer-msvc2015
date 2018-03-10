@@ -79,7 +79,7 @@ static const uint32_t diff1targ = 0x0000ffff;
 
 
 /* Used externally as confirmation of correct OCL code */
-int lyra2Z_test(unsigned char *pdata, const unsigned char *ptarget, uint32_t nonce)
+int lyra2Z330_test(unsigned char *pdata, const unsigned char *ptarget, uint32_t nonce)
 {
 	uint32_t tmp_hash7, Htarg = le32toh(((const uint32_t *)ptarget)[7]);
 	uint32_t data[20], ohash[8];
@@ -108,7 +108,7 @@ void lyra2Z330_regenhash(struct work *work)
 
         be32enc_vect(data, (const uint32_t *)work->data, 19);
         data[19] = htobe32(*nonce);
-        lyra2Zhash(ohash, data);
+        lyra2Z330hash(ohash, data);
 }
 
 bool scanhash_lyra2Z330(struct thr_info *thr, const unsigned char __maybe_unused *pmidstate,
@@ -129,7 +129,7 @@ bool scanhash_lyra2Z330(struct thr_info *thr, const unsigned char __maybe_unused
 
 		*nonce = ++n;
 		data[19] = (n);
-		lyra2Zhash(ostate, data);
+		lyra2Z330hash(ostate, data);
 		tmp_hash7 = (ostate[7]);
 
 		applog(LOG_INFO, "data7 %08lx",
