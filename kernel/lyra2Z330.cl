@@ -4,7 +4,6 @@
  * ==========================(LICENSE BEGIN)============================
  * Copyright (c) 2014 djm34
  * Copyright (c) 2014 James Lovejoy
- * Copyright (c) 2017 djm34
  * 
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -34,7 +33,7 @@
 
 #ifndef LYRA2Z330_CL
 #define LYRA2Z330_CL
-/*
+
 #if __ENDIAN_LITTLE__
 #define SPH_LITTLE_ENDIAN 1
 #else
@@ -62,16 +61,44 @@ typedef long sph_s64;
 
 #define SPH_C64(x)    ((sph_u64)(x ## UL))
 #define SPH_T64(x)    ((x) & SPH_C64(0xFFFFFFFFFFFFFFFF))
-*/
 
+//#define SPH_ROTL32(x, n)   (((x) << (n)) | ((x) >> (32 - (n))))
+//#define SPH_ROTR32(x, n)   (((x) >> (n)) | ((x) << (32 - (n))))
+//#define SPH_ROTL64(x, n)   (((x) << (n)) | ((x) >> (64 - (n))))
+//#define SPH_ROTR64(x, n)   (((x) >> (n)) | ((x) << (64 - (n))))
+
+#define SPH_ROTL32(x,n) rotate(x,(uint)n)     //faster with driver 14.6
+#define SPH_ROTR32(x,n) rotate(x,(uint)(32-n))
+#define SPH_ROTL64(x,n) rotate(x,(ulong)n)
+#define SPH_ROTR64(x,n) rotate(x,(ulong)(64-n))
+static inline sph_u64 ror64(sph_u64 vw, unsigned a) {
+	uint2 result;
+	uint2 v = as_uint2(vw);
+	unsigned n = (unsigned)(64 - a);
+	if (n == 32) { return as_ulong((uint2)(v.y, v.x)); }
+	if (n < 32) {
+		result.y = ((v.y << (n)) | (v.x >> (32 - n)));
+		result.x = ((v.x << (n)) | (v.y >> (32 - n)));
+	}
+	else {
+		result.y = ((v.x << (n - 32)) | (v.y >> (64 - n)));
+		result.x = ((v.y << (n - 32)) | (v.x >> (64 - n)));
+	}
+	return as_ulong(result);
+}
+
+//#define SPH_ROTR64(l,n) ror64(l,n)
 #define memshift 3
 #include "blake256.cl"
-#include "lyra2v16.cl"
+#include "lyra2v2.cl"
+#include "keccak1600.cl"
+#include "skein256.cl"
+#include "cubehash.cl"
+#include "bmw256.cl"
 
 #define SWAP4(x) as_uint(as_uchar4(x).wzyx)
 #define SWAP8(x) as_ulong(as_uchar8(x).s76543210)
 //#define SWAP8(x) as_ulong(as_uchar8(x).s32107654)
-/*
 #if SPH_BIG_ENDIAN
   #define DEC64E(x) (x)
   #define DEC64BE(x) (*(const __global sph_u64 *) (x));
@@ -83,7 +110,7 @@ typedef long sph_s64;
   #define DEC64LE(x) (*(const __global sph_u64 *) (x));
 #define DEC32LE(x) SWAP4(*(const __global sph_u32 *) (x));
 #endif
-*/
+
 typedef union {
   unsigned char h1[32];
   uint h4[8];
@@ -109,7 +136,7 @@ __kernel void search(
 )
 {
  uint gid = get_global_id(0);
- __global hash_t *hash = (__global hash_t *)(hashes + (4 * sizeof(ulong)* (gid - get_global_offset(0))));
+ __global hash_t *hash = (__global hash_t *)(hashes + (4 * sizeof(ulong)* (get_global_id(0) % MAX_GLOBAL_THREADS)));
 
 
 //  __global hash_t *hash = &(hashes[gid-get_global_offset(0)]);
@@ -167,21 +194,101 @@ barrier(CLK_LOCAL_MEM_FENCE);
 
 }
 
+// keccak256
+
+
+__attribute__((reqd_work_group_size(WORKSIZE, 1, 1)))
+__kernel void search1(__global uchar* hashes)
+{
+  uint gid = get_global_id(0);
+ // __global hash_t *hash = &(hashes[gid-get_global_offset(0)]);
+
+  __global hash_t *hash = (__global hash_t *)(hashes + (4 * sizeof(ulong)* (get_global_id(0) % MAX_GLOBAL_THREADS)));
+
+ 		sph_u64 keccak_gpu_state[25];
+
+		for (int i = 0; i<25; i++) {
+			if (i<4) { keccak_gpu_state[i] = hash->h8[i]; }
+			else    { keccak_gpu_state[i] = 0; }
+		}
+		keccak_gpu_state[4] = 0x0000000000000001;
+		keccak_gpu_state[16] = 0x8000000000000000;
+
+		keccak_block(keccak_gpu_state);
+		for (int i = 0; i<4; i++) { hash->h8[i] = keccak_gpu_state[i]; }
+barrier(CLK_LOCAL_MEM_FENCE);
+
+
+
+}
+
+// cubehash256
+
+__attribute__((reqd_work_group_size(WORKSIZE, 1, 1)))
+__kernel void search2(__global uchar* hashes)
+{
+	uint gid = get_global_id(0);
+	__global hash_t *hash = (__global hash_t *)(hashes + (4 * sizeof(ulong)* (get_global_id(0) % MAX_GLOBAL_THREADS)));
+
+
+	sph_u32 x0 = 0xEA2BD4B4; sph_u32 x1 = 0xCCD6F29F; sph_u32 x2 = 0x63117E71;
+	sph_u32 x3 = 0x35481EAE; sph_u32 x4 = 0x22512D5B; sph_u32 x5 = 0xE5D94E63;
+	sph_u32 x6 = 0x7E624131; sph_u32 x7 = 0xF4CC12BE; sph_u32 x8 = 0xC2D0B696;
+	sph_u32 x9 = 0x42AF2070; sph_u32 xa = 0xD0720C35; sph_u32 xb = 0x3361DA8C;
+	sph_u32 xc = 0x28CCECA4; sph_u32 xd = 0x8EF8AD83; sph_u32 xe = 0x4680AC00;
+	sph_u32 xf = 0x40E5FBAB;
+
+	sph_u32 xg = 0xD89041C3; sph_u32 xh = 0x6107FBD5;
+	sph_u32 xi = 0x6C859D41; sph_u32 xj = 0xF0B26679; sph_u32 xk = 0x09392549;
+	sph_u32 xl = 0x5FA25603; sph_u32 xm = 0x65C892FD; sph_u32 xn = 0x93CB6285;
+	sph_u32 xo = 0x2AF2B5AE; sph_u32 xp = 0x9E4B4E60; sph_u32 xq = 0x774ABFDD;
+	sph_u32 xr = 0x85254725; sph_u32 xs = 0x15815AEB; sph_u32 xt = 0x4AB6AAD6;
+	sph_u32 xu = 0x9CDAF8AF; sph_u32 xv = 0xD6032C0A;
+
+	x0 ^= (hash->h4[0]);
+	x1 ^= (hash->h4[1]);
+	x2 ^= (hash->h4[2]);
+	x3 ^= (hash->h4[3]);
+	x4 ^= (hash->h4[4]);
+	x5 ^= (hash->h4[5]);
+	x6 ^= (hash->h4[6]);
+	x7 ^= (hash->h4[7]);
+
+
+	SIXTEEN_ROUNDS;
+	x0 ^= 0x80;
+	SIXTEEN_ROUNDS;
+	xv ^= 0x01;
+	for (int i = 0; i < 10; ++i) SIXTEEN_ROUNDS;
+
+	hash->h4[0] = x0;
+	hash->h4[1] = x1;
+	hash->h4[2] = x2;
+	hash->h4[3] = x3;
+	hash->h4[4] = x4;
+	hash->h4[5] = x5;
+	hash->h4[6] = x6;
+	hash->h4[7] = x7;
+
+
+	barrier(CLK_GLOBAL_MEM_FENCE);
+
+}
+
 
 /// lyra2 algo 
 
 
 __attribute__((reqd_work_group_size(WORKSIZE, 1, 1)))
-__kernel void search1(__global uchar* hashes,__global uchar* matrix, __global uint* output, const ulong target)
+__kernel void search3(__global uchar* hashes,__global uchar* matrix )
 {
  uint gid = get_global_id(0);
  // __global hash_t *hash = &(hashes[gid-get_global_offset(0)]);
-  __global hash_t *hash = (__global hash_t *)(hashes + (4 * sizeof(ulong)* (gid - get_global_offset(0))));
-  __global ulong4 *DMatrix = (__global ulong4 *)(matrix + (4 * memshift * 8 * 8 * 8 * (gid - get_global_offset(0))));
+  __global hash_t *hash = (__global hash_t *)(hashes + (4 * sizeof(ulong)* (get_global_id(0) % MAX_GLOBAL_THREADS)));
+  __global ulong4 *DMatrix = (__global ulong4 *)(matrix + (4 * memshift * 4 * 4 * 8 * (get_global_id(0) % MAX_GLOBAL_THREADS)));
 
 //  uint offset = (4 * memshift * 4 * 4 * sizeof(ulong)* (get_global_id(0) % MAX_GLOBAL_THREADS))/32;
   ulong4 state[4];
-  __local ulong4 temp[24*WORKSIZE];
   
   state[0].x = hash->h8[0]; //password
   state[0].y = hash->h8[1]; //password
@@ -190,86 +297,229 @@ __kernel void search1(__global uchar* hashes,__global uchar* matrix, __global ui
   state[1] = state[0];
   state[2] = (ulong4)(0x6a09e667f3bcc908UL, 0xbb67ae8584caa73bUL, 0x3c6ef372fe94f82bUL, 0xa54ff53a5f1d36f1UL);
   state[3] = (ulong4)(0x510e527fade682d1UL, 0x9b05688c2b3e6c1fUL, 0x1f83d9abfb41bd6bUL, 0x5be0cd19137e2179UL);
+  for (int i = 0; i<12; i++) { round_lyra(state); } 
+
+  state[0] ^= (ulong4)(0x20,0x20,0x20,0x01);
+  state[1] ^= (ulong4)(0x04,0x04,0x80,0x0100000000000000);
 
   for (int i = 0; i<12; i++) { round_lyra(state); } 
 
-  state[0] ^= (ulong4)(0x20,0x20,0x20,0x08);
-  state[1] ^= (ulong4)(0x08,0x08,0x80,0x0100000000000000);
 
-  for (int i = 0; i<12; i++) { round_lyra(state); } 
-
-// reducedsqueezedrow0
-  uint ps1 = (memshift * 7);
+  uint ps1 = (memshift * 3);
 //#pragma unroll 4
-  for (int i = 0; i < 8; i++)
+  for (int i = 0; i < 4; i++)
   {
 	  uint s1 = ps1 - memshift * i;
 	  for (int j = 0; j < 3; j++)
 		  (DMatrix)[j+s1] = state[j];
 
-	  for (int j = 0; j < 3; j++)
-		  temp[3*(7-i)+j+24* get_local_id(0)] = state[j];
-
 	  round_lyra(state);
   }
- ///// reduceduplexrow1 ////////////
-  reduceDuplexf_tmp(state,DMatrix,temp + 24 * get_local_id(0));
  
-  reduceDuplexRowSetupf_pass1(1, 0, 2,state, DMatrix, temp + 24 * get_local_id(0));
-  reduceDuplexRowSetupf_pass2(2, 1, 3, state,DMatrix, temp + 24 * get_local_id(0));
-  reduceDuplexRowSetupf_pass1(3, 0, 4, state, DMatrix, temp + 24 * get_local_id(0));
-  reduceDuplexRowSetupf_pass2(4, 3, 5, state, DMatrix, temp + 24 * get_local_id(0));
-  reduceDuplexRowSetupf_pass1(5, 2, 6, state, DMatrix, temp + 24 * get_local_id(0));
-  reduceDuplexRowSetupf_pass2(6, 1, 7, state, DMatrix, temp + 24 * get_local_id(0));
+  reduceDuplexf(state,DMatrix);
+ 
+  reduceDuplexRowSetupf(1, 0, 2,state, DMatrix);
+  reduceDuplexRowSetupf(2, 1, 3, state,DMatrix);
 
 
   uint rowa;
-  uint prev = 7;
-  uint iterator = 0;
-
-for (uint j = 0; j < 4; j++) {
-
-  for (uint i = 0; i<8; i++) {
-	  rowa = state[0].x & 7;
-	  reduceDuplexRowf_tmp(prev, rowa, iterator, state, DMatrix, temp + 24 * get_local_id(0));
-	  prev = iterator;
-	  iterator = (iterator + 3) & 7;
+  uint prev = 3;
+  for (uint i = 0; i<4; i++) {
+	  rowa = state[0].x & 3;
+	  reduceDuplexRowf(prev, rowa, i, state, DMatrix);
+	  prev = i;
   }
 
-  for (uint i = 0; i<8; i++) {
-	  rowa = state[0].x & 7;
-if (i==7 && j==3)
-	  reduceDuplexRowf_tmp2(prev, rowa, iterator, state, DMatrix, temp + 24 * get_local_id(0));
-else
-	  reduceDuplexRowf_tmp(prev, rowa, iterator, state, DMatrix, temp + 24 * get_local_id(0));
-	  prev = iterator;
-	  iterator = (iterator - 1) & 7;
-  }
-}
 
-  uint shift = (memshift * 8 * rowa);
+
+  uint shift = (memshift * 4 * rowa);
 
   for (int j = 0; j < 3; j++)
-	  state[j] ^= temp[j + 24 * get_local_id(0)]; //(DMatrix)[j+shift];
-
-//  for (int j = 0; j < 3; j++)
-//	  state[j] ^= temp[j];
+	  state[j] ^= (DMatrix)[j+shift];
 
   for (int i = 0; i < 12; i++)
 	  round_lyra(state);
 //////////////////////////////////////
 
 
-//  for (int i = 0; i<4; i++) {hash->h8[i] = ((ulong*)state)[i];} 
-//barrier(CLK_LOCAL_MEM_FENCE);
+  for (int i = 0; i<4; i++) {hash->h8[i] = ((ulong*)state)[i];} 
+barrier(CLK_LOCAL_MEM_FENCE);
 
-bool result = (((ulong*)state)[3] <= target);
-if (result) {
-	output[atomic_inc(output + 0xFF)] = SWAP4(gid);
-}
+ 
 
 }
 
+//skein256
+
+__attribute__((reqd_work_group_size(WORKSIZE, 1, 1)))
+__kernel void search4(__global uchar* hashes)
+{
+ uint gid = get_global_id(0);
+ // __global hash_t *hash = &(hashes[gid-get_global_offset(0)]);
+  __global hash_t *hash = (__global hash_t *)(hashes + (4 * sizeof(ulong)* (get_global_id(0) % MAX_GLOBAL_THREADS)));
+
+
+		sph_u64 h[9];
+		sph_u64 t[3];
+        sph_u64 dt0,dt1,dt2,dt3;
+		sph_u64 p0, p1, p2, p3, p4, p5, p6, p7;
+        h[8] = skein_ks_parity;
+
+		for (int i = 0; i<8; i++) {
+			h[i] = SKEIN_IV512_256[i];
+			h[8] ^= h[i];}
+		    
+			t[0]=t12[0];
+			t[1]=t12[1];
+			t[2]=t12[2];
+
+        dt0=hash->h8[0];
+        dt1=hash->h8[1];
+        dt2=hash->h8[2];
+        dt3=hash->h8[3];
+
+		p0 = h[0] + dt0;
+		p1 = h[1] + dt1;
+		p2 = h[2] + dt2;
+		p3 = h[3] + dt3;
+		p4 = h[4];
+		p5 = h[5] + t[0];
+		p6 = h[6] + t[1];
+		p7 = h[7];
+
+        #pragma unroll 
+		for (int i = 1; i<19; i+=2) {Round_8_512(p0,p1,p2,p3,p4,p5,p6,p7,i);}
+        p0 ^= dt0;
+        p1 ^= dt1;
+        p2 ^= dt2;
+        p3 ^= dt3;
+
+		h[0] = p0;
+		h[1] = p1;
+		h[2] = p2;
+		h[3] = p3;
+		h[4] = p4;
+		h[5] = p5;
+		h[6] = p6;
+		h[7] = p7;
+		h[8] = skein_ks_parity;
+        
+		for (int i = 0; i<8; i++) { h[8] ^= h[i]; }
+		
+		t[0] = t12[3];
+		t[1] = t12[4];
+		t[2] = t12[5];
+		p5 += t[0];  //p5 already equal h[5] 
+		p6 += t[1];
+       
+        #pragma unroll
+		for (int i = 1; i<19; i+=2) { Round_8_512(p0, p1, p2, p3, p4, p5, p6, p7, i); }
+
+		hash->h8[0]      = p0;
+		hash->h8[1]      = p1;
+		hash->h8[2]      = p2;
+		hash->h8[3]      = p3;
+	barrier(CLK_LOCAL_MEM_FENCE);
+
+}
+
+//cubehash
+
+__attribute__((reqd_work_group_size(WORKSIZE, 1, 1)))
+__kernel void search5(__global uchar* hashes)
+{
+	uint gid = get_global_id(0);
+	__global hash_t *hash = (__global hash_t *)(hashes + (4 * sizeof(ulong)* (get_global_id(0) % MAX_GLOBAL_THREADS)));
+
+	    sph_u32 x0 = 0xEA2BD4B4; sph_u32 x1 = 0xCCD6F29F; sph_u32 x2 = 0x63117E71;
+	    sph_u32 x3 = 0x35481EAE; sph_u32 x4 = 0x22512D5B; sph_u32 x5 = 0xE5D94E63;
+		sph_u32 x6 = 0x7E624131; sph_u32 x7 = 0xF4CC12BE; sph_u32 x8 = 0xC2D0B696;
+		sph_u32 x9 = 0x42AF2070; sph_u32 xa = 0xD0720C35; sph_u32 xb = 0x3361DA8C;
+		sph_u32 xc = 0x28CCECA4; sph_u32 xd = 0x8EF8AD83; sph_u32 xe = 0x4680AC00;
+		sph_u32 xf = 0x40E5FBAB;
+
+		sph_u32 xg = 0xD89041C3; sph_u32 xh = 0x6107FBD5;
+		sph_u32 xi = 0x6C859D41; sph_u32 xj = 0xF0B26679; sph_u32 xk = 0x09392549;
+		sph_u32 xl = 0x5FA25603; sph_u32 xm = 0x65C892FD; sph_u32 xn = 0x93CB6285;
+		sph_u32 xo = 0x2AF2B5AE; sph_u32 xp = 0x9E4B4E60; sph_u32 xq = 0x774ABFDD;
+		sph_u32 xr = 0x85254725; sph_u32 xs = 0x15815AEB; sph_u32 xt = 0x4AB6AAD6;
+		sph_u32 xu = 0x9CDAF8AF; sph_u32 xv = 0xD6032C0A;
+		
+	x0 ^= (hash->h4[0]);
+	x1 ^= (hash->h4[1]);
+	x2 ^= (hash->h4[2]);
+	x3 ^= (hash->h4[3]);
+	x4 ^= (hash->h4[4]);
+	x5 ^= (hash->h4[5]);
+	x6 ^= (hash->h4[6]);
+	x7 ^= (hash->h4[7]);
+
+
+		SIXTEEN_ROUNDS;
+			x0 ^= 0x80;
+		SIXTEEN_ROUNDS;
+			xv ^= 0x01;
+			for (int i = 0; i < 10; ++i) SIXTEEN_ROUNDS;
+
+	hash->h4[0] = x0;
+	hash->h4[1] = x1;
+	hash->h4[2] = x2;
+	hash->h4[3] = x3;
+	hash->h4[4] = x4;
+	hash->h4[5] = x5;
+	hash->h4[6] = x6;
+	hash->h4[7] = x7;
+
+
+	barrier(CLK_GLOBAL_MEM_FENCE);
+
+}
+
+
+
+__attribute__((reqd_work_group_size(WORKSIZE, 1, 1)))
+__kernel void search6(__global uchar* hashes, __global uint* output, const ulong target)
+{
+	uint gid = get_global_id(0);
+	__global hash_t *hash = (__global hash_t *)(hashes + (4 * sizeof(ulong)* (get_global_id(0) % MAX_GLOBAL_THREADS)));
+
+	uint dh[16] = {
+		0x40414243, 0x44454647,
+		0x48494A4B, 0x4C4D4E4F,
+		0x50515253, 0x54555657,
+		0x58595A5B, 0x5C5D5E5F,
+		0x60616263, 0x64656667,
+		0x68696A6B, 0x6C6D6E6F,
+		0x70717273, 0x74757677,
+		0x78797A7B, 0x7C7D7E7F
+	};
+	uint final_s[16] = {
+		0xaaaaaaa0, 0xaaaaaaa1, 0xaaaaaaa2,
+		0xaaaaaaa3, 0xaaaaaaa4, 0xaaaaaaa5,
+		0xaaaaaaa6, 0xaaaaaaa7, 0xaaaaaaa8,
+		0xaaaaaaa9, 0xaaaaaaaa, 0xaaaaaaab,
+		0xaaaaaaac, 0xaaaaaaad, 0xaaaaaaae,
+		0xaaaaaaaf
+	};
+
+	uint message[16];
+	for (int i = 0; i<8; i++) message[i] = hash->h4[i];
+	for (int i = 9; i<14; i++) message[i] = 0;
+	message[8]= 0x80;
+	message[14]=0x100;
+	message[15]=0;
+
+	Compression256(message, dh);
+	Compression256(dh, final_s);
+	barrier(CLK_LOCAL_MEM_FENCE);
+
+
+	bool result = ( ((ulong*)final_s)[7] <= target);
+	if (result) {
+		output[atomic_inc(output + 0xFF)] = SWAP4(gid);
+	}
+
+}
 
 
 #endif // LYRA2Z330_CL
